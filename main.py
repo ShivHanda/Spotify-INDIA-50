@@ -3,74 +3,56 @@ import sys
 import requests
 import pandas as pd
 from datetime import datetime
-import base64
 from bs4 import BeautifulSoup
 
 # --- Configuration ---
-CLIENT_ID = os.environ.get('SPOTIPY_CLIENT_ID')
-CLIENT_SECRET = os.environ.get('SPOTIPY_CLIENT_SECRET')
-CSV_FILE = 'spotify_india_history.csv'
-
-def get_access_token():
-    """Spotify Auth (Client Credentials)."""
-    auth_url = 'https://accounts.spotify.com/api/token'
-    auth_str = f"{CLIENT_ID}:{CLIENT_SECRET}"
-    b64_auth_str = base64.b64encode(auth_str.encode()).decode()
-    
+CSV_FILE = 'spotify_india_history.csv' 
+def get_anonymous_token():
+    """
+    Hacks the system by requesting a temporary anonymous token 
+    used by the Spotify Web Player. No developer account needed.
+    """
+    print("Fetching anonymous Web Player token...")
+    url = "https://open.spotify.com/get_access_token?reason=transport&productType=web_player"
     headers = {
-        'Authorization': f'Basic {b64_auth_str}',
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-    data = {'grant_type': 'client_credentials'}
     
     try:
-        response = requests.post(auth_url, headers=headers, data=data)
+        response = requests.get(url, headers=headers)
         response.raise_for_status()
-        return response.json()['access_token']
+        token_data = response.json()
+        return token_data['accessToken']
     except Exception as e:
-        print(f"Error extracting token: {e}")
+        print(f"Error extracting anonymous token: {e}")
         sys.exit(1)
 
 def scrape_top_50_ids():
-    """
-    Fail-Safe Scraper: Looks for ANY link containing '/track/' 
-    instead of relying on a specific table structure.
-    """
+    """Scrapes Kworb for the current Track IDs."""
     url = "https://kworb.net/spotify/country/in_daily.html"
     print(f"Scraping Top 50 IDs from {url}...")
     
     try:
-        # User-Agent header is often required to avoid 403 blocks
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'html.parser')
-        
         track_ids = []
-        
-        # Robust Strategy: Find ALL links that look like a Spotify track
         all_links = soup.find_all('a', href=True)
         
         for link in all_links:
             href = link['href']
-            # Kworb links usually look like: ../track/12345ID.html
             if '/track/' in href:
-                # Extract the ID part
-                # Example: ../track/4Dvkj6JhhA12EX05fT7y2e.html -> 4Dvkj6JhhA12EX05fT7y2e
                 parts = href.split('/track/')
                 if len(parts) > 1:
                     clean_id = parts[1].replace('.html', '').strip()
-                    if clean_id not in track_ids: # Avoid duplicates
+                    if clean_id not in track_ids:
                         track_ids.append(clean_id)
-            
             if len(track_ids) >= 50:
                 break
-        
+                
         if not track_ids:
-            # Fallback debug
-            print("Debug: No links found with '/track/'. Page content preview:")
-            print(soup.prettify()[:500])
             raise Exception("Kworb scraping failed. No track IDs found.")
             
         print(f"Successfully scraped {len(track_ids)} track IDs.")
@@ -81,11 +63,14 @@ def scrape_top_50_ids():
         sys.exit(1)
 
 def get_tracks_metadata(token, track_ids):
-    """Fetch metadata from Spotify API."""
-    # Spotify allows max 50 IDs per request
+    """Fetches metadata using the anonymous token."""
     ids_string = ",".join(track_ids[:50])
-    url = f"https://api.spotify.com/v1/tracks?ids={ids_string}" # Use official endpoint
-    headers = {'Authorization': f'Bearer {token}'}
+    url = f"https://api.spotify.com/v1/tracks?ids={ids_string}"
+    
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    }
     
     try:
         response = requests.get(url, headers=headers)
@@ -96,16 +81,11 @@ def get_tracks_metadata(token, track_ids):
         sys.exit(1)
 
 def process_data():
-    if not CLIENT_ID or not CLIENT_SECRET:
-        print("Error: Secrets missing. Github Settings check karein.")
-        sys.exit(1)
-
     # 1. Scrape IDs
     track_ids = scrape_top_50_ids()
 
-    # 2. Login
-    print("Authenticating with Spotify...")
-    token = get_access_token()
+    # 2. Get Anonymous Token (Bypass Developer Auth)
+    token = get_anonymous_token()
     
     # 3. Get Details
     print("Fetching metadata for tracks...")
@@ -138,7 +118,9 @@ def process_data():
         extracted_data.append(row)
 
     new_df = pd.DataFrame(extracted_data)
-    new_df['Release_Date'] = pd.to_datetime(new_df['Release_Date'], format='mixed')
+
+    # Clean the Date format
+    new_df['Release_Date'] = pd.to_datetime(new_df['Release_Date'], format='mixed', errors='coerce')
     new_df['Release_Date'] = new_df['Release_Date'].dt.strftime('%Y-%m-%d')
 
     # 4. Save Logic
